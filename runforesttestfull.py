@@ -78,8 +78,5 @@ if __name__ == '__main__':
     
     zonefilename = "examples/data/states.shp"
     datafilename = "examples/data/glc2000.tif"
-    
-        
-    testit_oldschool(zonefilename,datafilename)
-    
-    #testit_forest(zonefilename,datafilename)
+
+    testit_forest(zonefilename,datafilename)

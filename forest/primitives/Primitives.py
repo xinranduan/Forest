@@ -315,30 +315,34 @@ class PartialSumRasterizePrim(Primitive):
         zone_ss = pd.Series(zonearr_flat)
         # Zip values and counts into small dict and put them into the Bob
         dict_count = zone_ss.value_counts().to_dict()
-        del dict_count[empty_value]
-        if len(dict_count) < 1:
-            pass
-        else:
-            zonereal = list(dict_count.keys())
+        if empty_value in dict_count.keys():
+            del dict_count[empty_value]
+            if len(dict_count) < 1:
+                return out_kv
+            
+        zonereal = list(dict_count.keys())
 
-            # Create a dummy zone id list to match those dummy zone sums created by bincount
-            zonedummy = list(range(int(min(zonereal)),int(max(zonereal))+1))
+        # Create a dummy zone id list to match those dummy zone sums created by bincount
+        zonedummy = list(range(int(min(zonereal)),int(max(zonereal))+1))
 
-            # Conduct Zonal analysis
-            zonedummy_sums = np.bincount(zonearr_flat, weights=data.data.flatten())
+        # Conduct Zonal analysis
+        zonedummy_sums = np.bincount(zonearr_flat, weights=value_flat)
 
-            print("Output Length: ", len(zonedummy_sums))
-            print("Dummy Zone Length: ", len(zonedummy))
-            print("Real Zone Length: ", len(zonereal))
+        print("Output Length: ", len(zonedummy_sums))
+        # print(zonedummy_sums)
+        print("Dummy Zone Length: ", len(zonedummy))
+        # print(zonedummy)
+        print("Real Zone Length: ", len(zonereal))
+        # print(zonereal)
 
-            # Zip zone ids with valid zone sums into a dictionary
-            dict_sum = dict(zip(zonedummy, zonedummy_sums.T))
-            for zoneid in zonereal:
-                out_kv.data[zoneid] = {}
-                out_kv.data[zoneid]['val'] = dict_sum[zoneid]
-                out_kv.data[zoneid]['cnt'] = dict_count[zoneid]
-            print(out_kv)
-        
+        # Zip zone ids with valid zone sums into a dictionary
+        dict_sum = dict(zip(zonedummy, zonedummy_sums.T))
+        for zoneid in zonereal:
+            out_kv.data[zoneid] = {}
+            out_kv.data[zoneid]['val'] = dict_sum[zoneid]
+            out_kv.data[zoneid]['cnt'] = dict_count[zoneid]
+        print(out_kv)
+
         del zonearr
         zonearr = None
 
