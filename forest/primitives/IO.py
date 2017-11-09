@@ -10,6 +10,7 @@ from collections import OrderedDict
 from osgeo import ogr,gdal
 import json
 import fiona
+import numpy
 
 from .Primitive import *
 from ..bobs.Bobs import *
@@ -142,7 +143,7 @@ class ShapefileReadPrim(Primitive):
         vector = Vector(miny,minx,maxy-miny,maxx-minx,None,None)
         vector.geom_types = geom_types
         vector.sr = spatialReference
-        vector.data = newlayer
+        vector.setLayer(newlayer)
         return vector
 
     def reg(self, filename):
@@ -163,27 +164,37 @@ class ShapefileNewReadPrim(Primitive):
         # Set passthrough to True so that data is passed through
         self.passthrough = True
         
-    def __call__(self, filename = None):    
-        
-        if filename is not None:
-            self.filename = filename
-        
-        crs = None
-        features = []
-        y = x = h = w = 0.0
-        with fiona.collection(self.filename) as shp:
-            print("Boundingbox",shp.bounds)
-            for feature in shp:
-                features.append(feature)
-            y = shp.bounds[0]
-            x = shp.bounds[1]
-            h = shp.bounds[2] - y
-            w = shp.bounds[3] - x
-                
-        vector = Vector(y, x, h, w)
-        vector.data = features
-        return vector
-    
+    def __call__(self, filename = None):
+
+        if Config.engine.engine_type != "SparkEngine":
+            if filename is not None:
+                self.filename = filename
+
+            crs = None
+            features = []
+            y = x = h = w = 0.0
+            with fiona.collection(self.filename) as shp:
+                print("Boundingbox",shp.bounds)
+                for feature in shp:
+                    features.append(feature)
+                y = shp.bounds[0]
+                x = shp.bounds[1]
+                h = shp.bounds[2] - y
+                w = shp.bounds[3] - x
+
+            vector = Vector(y, x, h, w)
+            vector.data = features
+            return vector
+        else:
+            print("\tRunning prime(ShapefileNewReadPrim) on Spark")
+
+            print ("\t-> loading shp file into array")
+            # TODO: load shp file
+            zone_array = numpy.fromfunction(lambda i, j: i + j, (5, 5), dtype=int).flatten()
+            print ("\t-> loading shp file completes")
+            print ("\t-> returns zone array")
+            return zone_array
+
     def reg(self, filename):
         print(self.name,"register")
         self.filename = filename
@@ -192,7 +203,6 @@ class ShapefileNewReadPrim(Primitive):
 ShapefileNewRead = ShapefileNewReadPrim()
         
 
-# FIXME: Rename GeotiffRead to RasterTileRead
 class GeotiffReadPrim(Primitive):
     def __init__(self):
         # Call the __init__ for Primitive  
@@ -205,63 +215,91 @@ class GeotiffReadPrim(Primitive):
     # FIXME: inbob is temporary for now, to solve a passthrough issue. Need to fix.
     def __call__(self, inbob = None, filename = None, bandnumber = 1, paralell = False):
 
-        if filename is not None:
-            self.filename = filename        
+        if Config.engine.engine_type != "SparkEngine":
+            if filename is not None:
+                self.filename = filename
 
-        ds = gdal.Open(self.filename) # Open gdal dataset
-        if ds is None:
-            raise PCMLException("Cannot open "+filename+" in ReadGeoTIFF")
-    
-        # By default get the first band
-        band = ds.GetRasterBand(bandnumber)
-        ncols = ds.RasterXSize
-        nrows = ds.RasterYSize
+            ds = gdal.Open(self.filename) # Open gdal dataset
+            if ds is None:
+                raise PCMLException("Cannot open "+filename+" in ReadGeoTIFF")
 
-        # nrows = 10000
+            # By default get the first band
+            band = ds.GetRasterBand(bandnumber)
+            ncols = ds.RasterXSize
+            nrows = ds.RasterYSize
 
-        if band is None:
-            print("Cannot read selected band in "+filename+" in ReadGeoTIFF")
-            raise(Exception)
-            
-        nodata_value = band.GetNoDataValue()
-        if nodata_value is None:
-            nodata_value=-9999
-        transform = ds.GetGeoTransform()
-        cellsize = transform[1]
-        origin_x = transform[0]
-        origin_y = transform[3]
-        x=origin_x
-        y=origin_y-nrows*cellsize
-        if(abs(transform[1])!=abs(transform[5])): # pixelwidth=1, pixelheight=5
-            PCMLUserInformation("Cells of different height and width selecting width not height")
-    
-        h=float(nrows)*cellsize
-        w=float(ncols)*cellsize
-        layer=Raster(y,x,h,w,None,None,nrows,ncols,cellsize)
-        
-        ######################################################
-        ## Enable paralell processing
-        paralell = True 
-        if paralell == False:
-            nparr=band.ReadAsArray(0,0,ncols,nrows) 
-            layer.data = nparr
-        layer.filename = self.filename
-        layer.nodatavalue = nodata_value
-        ######################################################
-        # set_nparray(nparr,cellsize,nodata_value)
-        del transform
-        del band
-        del ds
-        transform=None
-        ds=None 
-        band=None
-        ######################################################
-        if paralell == False:
-            del nparr
-            nparr=None
-        ######################################################
-    
-        return layer
+            # nrows = 10000
+
+            if band is None:
+                print("Cannot read selected band in "+filename+" in ReadGeoTIFF")
+                raise(Exception)
+
+            nodata_value = band.GetNoDataValue()
+            if nodata_value is None:
+                nodata_value=-9999
+            transform = ds.GetGeoTransform()
+            cellsize = transform[1]
+            origin_x = transform[0]
+            origin_y = transform[3]
+            x=origin_x
+            y=origin_y-nrows*cellsize
+            if(abs(transform[1])!=abs(transform[5])): # pixelwidth=1, pixelheight=5
+                PCMLUserInformation("Cells of different height and width selecting width not height")
+
+            h=float(nrows)*cellsize
+            w=float(ncols)*cellsize
+            layer=Raster(y,x,h,w,None,None,nrows,ncols,cellsize)
+
+            ######################################################
+            ## Enable paralell processing
+            paralell = True
+            if paralell == False:
+                nparr=band.ReadAsArray(0,0,ncols,nrows)
+                layer.data = nparr
+            layer.filename = self.filename
+            layer.nodatavalue = nodata_value
+            ######################################################
+            # set_nparray(nparr,cellsize,nodata_value)
+            del transform
+            del band
+            del ds
+            transform = None
+            ds=None
+            band=None
+            ######################################################
+            if paralell == False:
+                del nparr
+                nparr=None
+            ######################################################
+
+            return layer
+
+        else:
+            print("\tRunning prime(GeotiffReadPrim) on Spark")
+
+            print ("\t-> Loading Geotiff file into array")
+            filehandle = gdal.Open(self.filename)
+            if filehandle is None:
+                raise PCMLException("Cannot open " + filename + " in ReadGeoTIFF")
+
+            Y = filehandle.RasterYSize
+            print("\t-> Y =", Y)
+            X = filehandle.RasterXSize
+            print("\t-> X =", X)
+
+            band = filehandle.GetRasterBand(1)
+            no_data_value = band.GetNoDataValue()
+            # TODO: limited reading
+            rows = min(5, X)
+            cols = min(5, Y)
+            tiff_array = band.ReadAsArray(0, 0, rows, cols).flatten()
+            # data_shape = data_array.shape
+            print("\t-> Data Array dim =", tiff_array.shape)
+            print("\t-> No Data Value =", no_data_value)
+
+            print ("\t-> loading Geotiff completes")
+            print ("\t-> returns tiff array and no data value")
+            return tiff_array, no_data_value
 
     def reg(self, filename):
         print(self.name,"register")
@@ -269,4 +307,4 @@ class GeotiffReadPrim(Primitive):
         return self
     
 GeotiffRead = GeotiffReadPrim()    
-  
+    
