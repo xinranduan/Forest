@@ -6,12 +6,22 @@ Use of this source code is governed by a BSD-style license that can be found in 
 @contributors: <Contribute and add your name here!>
 """
 
-from ..bobs.Bob import *
 from ..bobs.Bobs import *
 from . import Config
 import math
 import multiprocessing
 import gdal
+
+# new import for spark
+import avro
+from avro.datafile import DataFileWriter
+from avro.io import DatumWriter
+import os
+os.environ['PYSPARK_SUBMIT_ARGS'] = '--jars /Users/Julina/luyi_forest/spark-avro_2.11-4.0.0.jar pyspark-shell'
+#os.environ['JVM_ARGS'] = '-Xms1024m -Xmx1024m'
+from pyspark.sql import SparkSession
+import sys
+import pickle
 
 class Engine(object):
     def __init__(self, engine_type):
@@ -272,6 +282,7 @@ def worker(input_list):
     ######################################################
 
     oq.put(out) # Save the output in the output queue
+    # return "worker %d %s %d %s" % (rank, splitbobs, test_number, str(tiletype)) 
     return "worker %d %s" % (rank, splitbobs)  
     
 # FIXME: Change to Engines.py    
@@ -329,7 +340,7 @@ class MultiprocessingEngine(Engine):
 
             # Make a pool of 4 processes
             # FIXME: THIS IS FIXED FOR NOW
-            print("-> Number of processes = ", Config.n_core)
+            # print("-> Number of processes = ", Config.n_core)
 
             pool = multiprocessing.Pool(Config.n_core)
             
@@ -384,66 +395,276 @@ class MultiprocessingEngine(Engine):
 mp_engine = MultiprocessingEngine()
 
 class SparkEngine(Engine):
-
     def __init__(self):
-        super(SparkEngine,self).__init__("SparkEngine")
-
-    def split(self, bobs):
-        print("Spark Engine Split")
-        print("\t-> convert zone-value pairs into RDD")
-        if self.is_split is True:
-            return
-        # retrieve previous output
-        tiff_array = Config.inputs[1][0]
-        no_data_value = Config.inputs[1][1]
-        zone_array = Config.inputs[0]
-        zone_data_kv = list(zip(zone_array, tiff_array))
-
-        # distribute zone-data pairs on cluster
-        zone_data_rdd = Config.spark_context.parallelize(zone_data_kv).filter(lambda x: x[1] != no_data_value)
-
-        # collect garbage
-        del tiff_array
-        del zone_array
-        del zone_data_kv
-        tiff_array = None
-        zone_array = None
-        zone_data_kv = None
-
-        print("\t-> set RDD as global inputs")
-        Config.inputs = []
-        Config.inputs.append(zone_data_rdd)
-        self.is_split = True
-
-    def merge(self, bobs):
-        print("Spark Engine Merge")
+        super(SparkEngine, self).__init__("SparkEngine")
         self.is_split = False
 
+    def split(self, bobs):
+
+        # Set the number of tiles to split to
+        num_tiles = Config.n_tile
+        print("-> Number of tiles = ", num_tiles)
+
+        # If already split, do nothing.
+        if self.is_split is True:
+            return
+
+        new_inputs = []
+
+        # Loop over bobs in inputs to split
+        # Raster BOB = geotiff
+        # Vector BOB = shapefile
+        for bob in Config.inputs:
+
+            # For each bob, create a new split tile
+            tiles = []
+
+            # For all other data types (e.g., vectors) we just duplicate the data
+            # CASE : shapefile
+            if not isinstance(bob, Raster):
+                # DEBUG
+                print("Shapefile size: ", sys.getsizeof(bob))
+                # each tile get a shapefile copy
+                #for tile_index in range(num_tiles):
+                #    tiles.append(bob)
+                new_inputs.append(tiles)  # Now add the tiles to new_inputs
+
+                # Convert shapefile bob into bytes
+                shp_bytes = pickle.dumps(bob)
+
+                continue  # Now skip to the next bob in the list
+
+            # DEBUG
+            assert (isinstance(bob, Raster))
+
+            # CASE: geotiff
+
+            # Sanity check, if tiles are larger than data
+            if num_tiles > bob.nrows:
+                num_tiles = bob.nrows  # Reset to be 1 row per tile
+
+            # Set tile nrows and ncols
+            tile_nrows = math.ceil(bob.nrows / num_tiles)
+            tile_ncols = bob.ncols
+
+            # create Avro schema and data file
+            schema = avro.schema.Parse(GeotiffAvroSchema())
+            avro_writer = DataFileWriter(open("geotiff.avro", "wb"), DatumWriter(), schema)
+
+            # open geotiff file
+            filehandle = gdal.Open(bob.filename)
+
+            # Compute each tile
+            for tile_index in range(num_tiles):
+
+                print("Tile #", tile_index)
+                # Calculate the r,c location
+                tile_r = tile_nrows * tile_index
+                tile_c = 0
+
+                # For the last tile_index, see if we are "too tall"
+                # Meaning that the tiles are larger than the bob itself
+                #  split Bob size      > Actual bob size
+                if tile_r + tile_nrows > bob.nrows:
+                    # If so, then resize so it is correct to bob.nrows
+                    tile_nrows = bob.nrows - tile_r
+
+                # Set tile height and width
+                tile_h = bob.cellsize * tile_nrows
+                tile_w = bob.w
+
+                # Calculate y,x
+                tile_y = bob.y + tile_r * bob.cellsize
+                tile_x = bob.x
+
+                # Create the tile
+                tile = Bob(tile_y, tile_x, tile_h, tile_w)
+                tile.nrows = tile_nrows
+                tile.ncols = tile_ncols
+                tile.r = tile_r
+                tile.c = tile_c
+                tile.cellsize = bob.cellsize
+                tile.datatype = bob.datatype
+
+                tile.filename = bob.filename
+                tile.nodatavalue = bob.nodatavalue
+
+                # write title data to Avro
+                band = filehandle.GetRasterBand(1)
+                reverse_rnum = filehandle.RasterYSize - (tile.r + tile.nrows)
+                tile.data = band.ReadAsArray(tile.c, reverse_rnum, tile.ncols, tile.nrows)
+                #DEBUG
+                #tile.data = band.ReadAsArray(tile.c, reverse_rnum, 3, 3)
+                print("-> data shape:", tile.data.shape)
+                print("-> data type:", tile.data.dtype)
+                avro_writer.append({"data": pickle.dumps(tile.data), \
+                                    "zone": shp_bytes, \
+                                    "nodatavalue": tile.nodatavalue, \
+                                    "x": tile_x, \
+                                    "y": tile_y, \
+                                    "h": tile_h, \
+                                    "cellsize": tile.cellsize})
+
+                # Save tiles
+                # tiles.append(tile)
+                # End of each tile
+
+            # Save list of tiles (split Bobs) to new inputs
+            # Notice that they are not grouped as inputs
+            # So they will need to be zipped
+            # new_inputs.append(tiles)
+            avro_writer.close()
+            # End of for each bob (CASE Geotiff)
+
+        # Handle all tiles
+        # Now we have new_inputs so rewrite Config.inputs with new list
+        # Zip the list to create groups of split bobs
+        # These groups will be input for the primitives
+        # zip_inputs = zip(*new_inputs)
+        # Config.inputs = list(zip_inputs)  # Dereference zip object and create a list
+
+        # read Avro file into Spark
+        spark = SparkSession \
+            .builder \
+            .appName("Python Spark SQL basic example") \
+            .master("local") \
+            .config("spark.sql.avro.compression.codec", "deflate") \
+            .config('spark.hadoop.avro.mapred.ignore.inputs.without.extension', 'false') \
+            .getOrCreate()
+        rdd = spark.read.format("com.databricks.spark.avro").load("geotiff.avro").rdd
+        # debug
+        # print(rdd.take(1))
+
+        Config.inputs = rdd
+
+        # Set split to True so engine knows that Config.inputs is split
+        self.is_split = True
+
+        # Merge (>)
+    def merge(self, bobs):
+        self.is_split = False
+
+    # Sequence (==)
+    def sequence(self, bobs):
+        # If the Bobs are split, then handle it
+        # If they are not, then there is nothing to do
+        if self.is_split is True:
+            # FIXME: Need to handle this
+            print("NEED TO LOOP OVER SPLIT BOBS")
+            pass  # Loop over all the split Bobs
+        pass
+
+    # This method changes the run behavior to be in parallel.
     def run(self, primitive):
-        print("Spark Engine Running", primitive)
+        print("Running", primitive)
 
-        # Record input and output of the primitive
+        # Get the name of the primitive operation being executed
         name = primitive.__class__.__name__
+
+        # Get the inputs
         inputs = Config.inputs
-        # Config.flows[name] = {}
-        # Config.flows[name]['input'] = inputs
 
-        new_input = primitive(*inputs)
-        # Config.flows[name]['output'] = new_input
+        # Save the flows information in the global config data structure
+        # FIXME: The problem with this solution is all data will be stored
+        #        indefinitely, which is going to be a huge problem.
+        Config.flows[name] = {}
+        Config.flows[name]['input'] = inputs
 
-        if not primitive.passthrough:
-            Config.inputs = []
-            Config.inputs.append(new_input)
+        # If Bobs are not split, then it is easy
+        if Config.engine.is_split is False:
+            if isinstance(inputs, Bob):  # If it is a bob
+                inputs = primitive(inputs)  # Just pass in the bob
+            else:  # If it is a list
+                inputs = primitive(*inputs)  # De-reference the list and pass as parameters
+
+        else:  # When they are split we have to handle the list of Bobs and run in parallel
+
+            print("-> in parallel")
+
+            # inputs should be a rdd
+
+            # DEBUG
+            # cur_tile = inputs.take(1)
+            # print("RDD title type:", type(cur_tile))
+
+            # new rdd
+            inputs = primitive(rdd=inputs);
+
+            # DEBUG
+            # new_tile = inputs.take(1)
+            # print("New RDD title type:", type(new_tile))
+
+            inputs = inputs.collect()
+
+            # # TILE ENGINE SPLIT
+            # pool = multiprocessing.Pool(Config.n_core)
+            #
+            # # Create a manager for the input and output queues (iq, oq)
+            # m = multiprocessing.Manager()
+            # iq = m.Queue()
+            # oq = m.Queue()
+            #
+            # # Add split bobs to the input queue to be processed
+            # for splitbobs in inputs:
+            #     iq.put(splitbobs)
+            #
+            # # How many times will we run the worker function using map
+            # mapsize = len(inputs)
+            #
+            # # Make a list of ranks, queues, and primitives
+            # # These will be used for map_inputs
+            # ranklist = range(mapsize)
+            # iqlist = [iq for i in range(mapsize)]
+            # oqlist = [oq for i in range(mapsize)]
+            # prlist = [primitive for i in range(mapsize)]
+            #
+            # # Create map inputs by zipping the lists we just created
+            # map_inputs = zip(ranklist, iqlist, oqlist, prlist)
+            #
+            # # Apply the inputs to the worker function using parallel map
+            # # Results can be printed for output from the worker tasks
+            # results = pool.map(worker, map_inputs)
+            #
+            # # Get the outputs from the output queue and save as new inputs
+            # inputs = []
+            # while not oq.empty():
+            #     output = oq.get()  # Get one output from the queue
+            #     inputs.append(output)  # Save to inputs
+            #
+            # # Done with the pool so close, then join (wait)
+            # pool.close()
+            # pool.join()
+
+        # Save the outputs from this primitive
+        Config.flows[name]['output'] = inputs
+
+        # Save inputs from this/these primitive(s), for the next primitive
+        if primitive.passthrough is False:  # Typical case
+            Config.inputs = inputs  # Reset the inputs
         else:
-            assert(Config.engine.is_split is False)
-            Config.inputs.append(new_input)
+            assert (Config.engine.is_split is False)
+            Config.inputs.append(inputs)  # Add to the inputs
 
-        return new_input;
-    
+        return inputs
+
 spark_engine = SparkEngine()
 
-# Set the Config.engine as the default
+def GeotiffAvroSchema():
+    return '{"namespace": "geotiff.avro",\n' \
+           '"type": "record",\n ' \
+           '"name": "Geotiff",\n ' \
+           '"fields": [\n' \
+           '     {"name": "data", "type": "bytes"},\n' \
+           '     {"name": "zone", "type": "bytes"},\n' \
+           '     {"name": "nodatavalue",  "type": ["double", "null"]},\n' \
+           '     {"name": "x", "type": ["float", "null"]},\n' \
+           '     {"name": "y", "type": ["float", "null"]},\n' \
+           '     {"name": "h", "type": ["float", "null"]},\n' \
+           '     {"name": "cellsize", "type": ["float", "null"]}\n' \
+           ' ]' \
+           '\n}'
 
+# Set the Config.engine as the default
 
 Config.engine = tile_engine
 Config.engine = pass_engine
@@ -451,16 +672,6 @@ Config.engine = mp_engine
 Config.engine = spark_engine
 
 print("Default engine",Config.engine)
-
-# If using Spark engine, initialize SparkConf and SparkContext
-if(isinstance(Config.engine, SparkEngine)):
-    import pyspark
-    import psutil
-    from pyspark import SparkConf, SparkContext
-
-    # TODO: cluster setting
-    conf = SparkConf().setMaster("local").setAppName("Forest")
-    Config.spark_context = pyspark.SparkContext(conf=conf)
 
 if __name__ == '__main__':
     pass

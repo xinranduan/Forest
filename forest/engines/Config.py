@@ -21,6 +21,3 @@ engine = None
 n_tile = 12
 #n_tile = 20
 n_core = 4
-
-# SparkContext for Spark Engine
-spark_context = None
