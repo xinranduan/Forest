@@ -17,8 +17,7 @@ import avro
 from avro.datafile import DataFileWriter
 from avro.io import DatumWriter
 import os
-os.environ['PYSPARK_SUBMIT_ARGS'] = '--jars /Users/Julina/luyi_forest/spark-avro_2.11-4.0.0.jar pyspark-shell'
-#os.environ['JVM_ARGS'] = '-Xms1024m -Xmx1024m'
+os.environ['PYSPARK_SUBMIT_ARGS'] = '--jars spark-avro_2.11-4.0.0.jar pyspark-shell'
 from pyspark.sql import SparkSession
 import sys
 import pickle
@@ -405,125 +404,254 @@ class SparkEngine(Engine):
         num_tiles = Config.n_tile
         print("-> Number of tiles = ", num_tiles)
 
+        AVRO_FILENAME = "spark_tiles.avro";
+
         # If already split, do nothing.
         if self.is_split is True:
             return
 
-        new_inputs = []
+        # counters for bob types
+        raster_count = 0;
+        nonraster_count = 0;
 
-        # Loop over bobs in inputs to split
-        # Raster BOB = geotiff
-        # Vector BOB = shapefile
-        for bob in Config.inputs:
+        USE_NEW_SPLIT = True
+        if (USE_NEW_SPLIT):
+            # New Split
+            # Step 1: Collect all non-raster bobs as bytes (e.g. shpfiles vector)
 
-            # For each bob, create a new split tile
-            tiles = []
+            nonraster_bob_list = list(filter(lambda bob: not isinstance(bob, Raster), Config.inputs));
+            nonraster_count = len(nonraster_bob_list);
+            print("# of non-Raster Bobs:", nonraster_count);
+            nonraster_bytes_list = [];
 
-            # For all other data types (e.g., vectors) we just duplicate the data
-            # CASE : shapefile
-            if not isinstance(bob, Raster):
-                # DEBUG
-                print("Shapefile size: ", sys.getsizeof(bob))
-                # each tile get a shapefile copy
-                #for tile_index in range(num_tiles):
-                #    tiles.append(bob)
-                new_inputs.append(tiles)  # Now add the tiles to new_inputs
+            # loop over all non-raster bobs
+            for nonraster_bob in nonraster_bob_list:
 
-                # Convert shapefile bob into bytes
-                shp_bytes = pickle.dumps(bob)
+                # Convert non raster bob into bytes
+                nonraster_bytes = pickle.dumps(nonraster_bob);
+                nonraster_bytes_list.append(nonraster_bytes);
 
-                continue  # Now skip to the next bob in the list
+            # End of Step 1
 
-            # DEBUG
-            assert (isinstance(bob, Raster))
+            # Step 2: Collect all raster bobs (e.g. geotiff raster)
 
-            # CASE: geotiff
-
-            # Sanity check, if tiles are larger than data
-            if num_tiles > bob.nrows:
-                num_tiles = bob.nrows  # Reset to be 1 row per tile
-
-            # Set tile nrows and ncols
-            tile_nrows = math.ceil(bob.nrows / num_tiles)
-            tile_ncols = bob.ncols
+            rasterbob_list = list(filter(lambda bob: isinstance(bob, Raster), Config.inputs));
+            raster_count = len(rasterbob_list);
+            print("# of Raster Bobs:", raster_count);
 
             # create Avro schema and data file
-            schema = avro.schema.Parse(GeotiffAvroSchema())
-            avro_writer = DataFileWriter(open("geotiff.avro", "wb"), DatumWriter(), schema)
+            if nonraster_count == 1 and raster_count == 1:
+                # Examples: zonal operations
+                schema_str = OneGeotiffOneShpAvroSchema();
+            elif nonraster_count == 0 and raster_count == 2:
+                # Examples: basic operations, NDVI
+                schema_str = TwoGeotiffAvroSchema();
+            elif nonraster_count == 0 and raster_count == 1:
+                # Examples: HillShade
+                schema_str = OneGeotiffAvroSchema()
+            else:
+                print("*** PLEASE CREATE NEW AVRO SCHEMA! ***")
+                assert(False);
 
-            # open geotiff file
-            filehandle = gdal.Open(bob.filename)
+            schema = avro.schema.Parse(schema_str)
+            avro_writer = DataFileWriter(open(AVRO_FILENAME, "wb"), DatumWriter(), schema)
 
-            # Compute each tile
+            # Create a list of reusable filehandles
+            filehandle_list = [];
+            for bob in rasterbob_list:
+                filehandle_list.append(gdal.Open(bob.filename));
+
+            # Compute each Spark tile
             for tile_index in range(num_tiles):
+                print("Tile #", tile_index);
 
-                print("Tile #", tile_index)
-                # Calculate the r,c location
-                tile_r = tile_nrows * tile_index
-                tile_c = 0
+                # contains i-th subtiles from each raster bob
+                raster_subtile = [];
 
-                # For the last tile_index, see if we are "too tall"
-                # Meaning that the tiles are larger than the bob itself
-                #  split Bob size      > Actual bob size
-                if tile_r + tile_nrows > bob.nrows:
-                    # If so, then resize so it is correct to bob.nrows
-                    tile_nrows = bob.nrows - tile_r
+                # loop over raster bobs to get i-th subtile
+                for bob_index in range(raster_count):
+                    print("\tSubtile #", bob_index);
+                    bob = rasterbob_list[bob_index];
+                    filehandle = filehandle_list[bob_index];
 
-                # Set tile height and width
-                tile_h = bob.cellsize * tile_nrows
-                tile_w = bob.w
+                    # Sanity check, if tiles are larger than data
+                    if num_tiles > bob.nrows:
+                        num_tiles = bob.nrows  # Reset to be 1 row per tile
 
-                # Calculate y,x
-                tile_y = bob.y + tile_r * bob.cellsize
-                tile_x = bob.x
+                    # Set tile nrows and ncols
+                    tile_nrows = math.ceil(bob.nrows / num_tiles)
+                    tile_ncols = bob.ncols
 
-                # Create the tile
-                tile = Bob(tile_y, tile_x, tile_h, tile_w)
-                tile.nrows = tile_nrows
-                tile.ncols = tile_ncols
-                tile.r = tile_r
-                tile.c = tile_c
-                tile.cellsize = bob.cellsize
-                tile.datatype = bob.datatype
+                    # Calculate the r,c location
+                    tile_r = tile_nrows * tile_index
+                    tile_c = 0
 
-                tile.filename = bob.filename
-                tile.nodatavalue = bob.nodatavalue
+                    # For the last tile_index, see if we are "too tall"
+                    # Meaning that the tiles are larger than the bob itself
+                    #  split Bob size      > Actual bob size
+                    if tile_r + tile_nrows > bob.nrows:
+                        # If so, then resize so it is correct to bob.nrows
+                        tile_nrows = bob.nrows - tile_r
 
-                # write title data to Avro
-                band = filehandle.GetRasterBand(1)
-                reverse_rnum = filehandle.RasterYSize - (tile.r + tile.nrows)
-                tile.data = band.ReadAsArray(tile.c, reverse_rnum, tile.ncols, tile.nrows)
-                #DEBUG
-                #tile.data = band.ReadAsArray(tile.c, reverse_rnum, 3, 3)
-                print("-> data shape:", tile.data.shape)
-                print("-> data type:", tile.data.dtype)
-                avro_writer.append({"data": pickle.dumps(tile.data), \
-                                    "zone": shp_bytes, \
-                                    "nodatavalue": tile.nodatavalue, \
-                                    "x": tile_x, \
-                                    "y": tile_y, \
-                                    "h": tile_h, \
-                                    "cellsize": tile.cellsize})
+                    # Set tile height and width
+                    tile_h = bob.cellsize * tile_nrows
+                    tile_w = bob.w
 
-                # Save tiles
-                # tiles.append(tile)
-                # End of each tile
+                    # Calculate y,x
+                    tile_y = bob.y + tile_r * bob.cellsize
+                    tile_x = bob.x
 
-            # Save list of tiles (split Bobs) to new inputs
-            # Notice that they are not grouped as inputs
-            # So they will need to be zipped
-            # new_inputs.append(tiles)
-            avro_writer.close()
-            # End of for each bob (CASE Geotiff)
+                    # Create the tile
+                    subtile = Bob(tile_y, tile_x, tile_h, tile_w)
+                    subtile.nrows = tile_nrows
+                    subtile.ncols = tile_ncols
+                    subtile.r = tile_r
+                    subtile.c = tile_c
+                    subtile.cellsize = bob.cellsize
+                    subtile.datatype = bob.datatype
 
-        # Handle all tiles
-        # Now we have new_inputs so rewrite Config.inputs with new list
-        # Zip the list to create groups of split bobs
-        # These groups will be input for the primitives
-        # zip_inputs = zip(*new_inputs)
-        # Config.inputs = list(zip_inputs)  # Dereference zip object and create a list
+                    subtile.filename = bob.filename
+                    subtile.nodatavalue = bob.nodatavalue
 
-        # read Avro file into Spark
+                    band = filehandle.GetRasterBand(1)
+                    reverse_rnum = filehandle.RasterYSize - (subtile.r + subtile.nrows)
+                    subtile.data = band.ReadAsArray(subtile.c, reverse_rnum, subtile.ncols, subtile.nrows)
+                    print("\t-> data shape:", subtile.data.shape)
+                    print("\t-> data type:", subtile.data.dtype)
+
+                    raster_subtile.append(subtile);
+                    # End of each subtile processing
+
+                if nonraster_count == 1 and raster_count == 1:
+                    # Examples: zonal operations
+                    shp_bytes = nonraster_bytes_list[0]; # should only have one shp
+                    tile = raster_subtile[0]; # should only have one subtile
+                    avro_writer.append({"data": pickle.dumps(tile.data), \
+                                        "zone": shp_bytes, \
+                                        "nodatavalue": tile.nodatavalue, \
+                                        "x": tile.x, \
+                                        "y": tile.y, \
+                                        "h": tile.h, \
+                                        "cellsize": tile.cellsize})
+
+                elif nonraster_count == 0 and raster_count == 2:
+                    # Examples: basic operations, NDVI
+                    tile1 = raster_subtile[0];
+                    tile2 = raster_subtile[1];
+                    avro_writer.append({"data1": pickle.dumps(tile1.data), \
+                                        "data2": pickle.dumps(tile2.data), \
+                                        "nodatavalue1": tile1.nodatavalue, \
+                                        "nodatavalue2": tile2.nodatavalue})
+
+                elif nonraster_count == 0 and raster_count == 1:
+                    # Examples: HillShade
+                    tile = raster_subtile[0];  # should only have one subtile
+                    avro_writer.append({"data": pickle.dumps(tile.data), \
+                                        "nodatavalue": tile.nodatavalue})
+                else:
+                    print("*** PLEASE CREATE NEW AVRO SCHEMA! ***")
+                    assert (False);
+
+            # End of Step 2
+            # End of New Split
+
+        else:
+            # Old Split
+            for bob in Config.inputs:
+
+                # For all other data types (e.g., vectors) we just duplicate the data
+                # CASE : shapefile
+                if not isinstance(bob, Raster):
+                    nonraster_count += 1
+
+                    # Convert shapefile bob into bytes
+                    shp_bytes = pickle.dumps(bob)
+
+                    continue  # Now skip to the next bob in the list
+
+                # DEBUG
+                assert (isinstance(bob, Raster))
+
+                # CASE: geotiff
+                raster_count += 1
+
+                # Sanity check, if tiles are larger than data
+                if num_tiles > bob.nrows:
+                    num_tiles = bob.nrows  # Reset to be 1 row per tile
+
+                # Set tile nrows and ncols
+                tile_nrows = math.ceil(bob.nrows / num_tiles)
+                tile_ncols = bob.ncols
+
+                # create Avro schema and data file
+                schema = avro.schema.Parse(OneGeotiffOneShpAvroSchema())
+                avro_writer = DataFileWriter(open(AVRO_FILENAME, "wb"), DatumWriter(), schema)
+
+                # open geotiff file
+                filehandle = gdal.Open(bob.filename)
+
+                # Compute each tile
+                for tile_index in range(num_tiles):
+
+                    print("Tile #", tile_index)
+                    # Calculate the r,c location
+                    tile_r = tile_nrows * tile_index
+                    tile_c = 0
+
+                    # For the last tile_index, see if we are "too tall"
+                    # Meaning that the tiles are larger than the bob itself
+                    #  split Bob size      > Actual bob size
+                    if tile_r + tile_nrows > bob.nrows:
+                        # If so, then resize so it is correct to bob.nrows
+                        tile_nrows = bob.nrows - tile_r
+
+                    # Set tile height and width
+                    tile_h = bob.cellsize * tile_nrows
+                    tile_w = bob.w
+
+                    # Calculate y,x
+                    tile_y = bob.y + tile_r * bob.cellsize
+                    tile_x = bob.x
+
+                    # Create the tile
+                    tile = Bob(tile_y, tile_x, tile_h, tile_w)
+                    tile.nrows = tile_nrows
+                    tile.ncols = tile_ncols
+                    tile.r = tile_r
+                    tile.c = tile_c
+                    tile.cellsize = bob.cellsize
+                    tile.datatype = bob.datatype
+
+                    tile.filename = bob.filename
+                    tile.nodatavalue = bob.nodatavalue
+
+                    # write title data to Avro
+                    band = filehandle.GetRasterBand(1)
+                    reverse_rnum = filehandle.RasterYSize - (tile.r + tile.nrows)
+                    tile.data = band.ReadAsArray(tile.c, reverse_rnum, tile.ncols, tile.nrows)
+                    print("-> data shape:", tile.data.shape)
+                    print("-> data type:", tile.data.dtype)
+                    avro_writer.append({"data": pickle.dumps(tile.data), \
+                                        "zone": shp_bytes, \
+                                        "nodatavalue": tile.nodatavalue, \
+                                        "x": tile_x, \
+                                        "y": tile_y, \
+                                        "h": tile_h, \
+                                        "cellsize": tile.cellsize})
+
+                    # Save tiles
+                    # tiles.append(tile)
+                    # End of each tile
+
+                # Save list of tiles (split Bobs) to new inputs
+                # Notice that they are not grouped as inputs
+                # So they will need to be zipped
+                # new_inputs.append(tiles)
+                avro_writer.close()
+                # End of for each bob (CASE Geotiff)
+                # End of Old Split
+
+        # Read Avro file into Spark
         spark = SparkSession \
             .builder \
             .appName("Python Spark SQL basic example") \
@@ -531,9 +659,7 @@ class SparkEngine(Engine):
             .config("spark.sql.avro.compression.codec", "deflate") \
             .config('spark.hadoop.avro.mapred.ignore.inputs.without.extension', 'false') \
             .getOrCreate()
-        rdd = spark.read.format("com.databricks.spark.avro").load("geotiff.avro").rdd
-        # debug
-        # print(rdd.take(1))
+        rdd = spark.read.format("com.databricks.spark.avro").load(AVRO_FILENAME).rdd
 
         Config.inputs = rdd
 
@@ -649,10 +775,10 @@ class SparkEngine(Engine):
 
 spark_engine = SparkEngine()
 
-def GeotiffAvroSchema():
-    return '{"namespace": "geotiff.avro",\n' \
+def OneGeotiffOneShpAvroSchema():
+    return '{"namespace": "spark_tiles.avro",\n' \
            '"type": "record",\n ' \
-           '"name": "Geotiff",\n ' \
+           '"name": "SparkTiles",\n ' \
            '"fields": [\n' \
            '     {"name": "data", "type": "bytes"},\n' \
            '     {"name": "zone", "type": "bytes"},\n' \
@@ -661,6 +787,28 @@ def GeotiffAvroSchema():
            '     {"name": "y", "type": ["float", "null"]},\n' \
            '     {"name": "h", "type": ["float", "null"]},\n' \
            '     {"name": "cellsize", "type": ["float", "null"]}\n' \
+           ' ]' \
+           '\n}'
+
+def TwoGeotiffAvroSchema():
+    return '{"namespace": "spark_tiles.avro",\n' \
+           '"type": "record",\n ' \
+           '"name": "SparkTiles",\n ' \
+           '"fields": [\n' \
+           '     {"name": "data1", "type": "bytes"},\n' \
+           '     {"name": "data2", "type": "bytes"},\n' \
+           '     {"name": "nodatavalue1",  "type": ["double", "null"]},\n' \
+           '     {"name": "nodatavalue2",  "type": ["double", "null"]}\n' \
+           ' ]' \
+           '\n}'
+
+def OneGeotiffAvroSchema():
+    return '{"namespace": "spark_tiles.avro",\n' \
+           '"type": "record",\n ' \
+           '"name": "SparkTiles",\n ' \
+           '"fields": [\n' \
+           '     {"name": "data", "type": "bytes"},\n' \
+           '     {"name": "nodatavalue",  "type": ["double", "null"]}\n' \
            ' ]' \
            '\n}'
 

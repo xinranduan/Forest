@@ -12,12 +12,10 @@ import numpy as np
 import pyspark
 import pickle
 import sys
-
-
-
 from .Primitive import *
 from ..bobs.Bobs import *
 import pandas as pd
+import math
 
 
 '''
@@ -100,6 +98,101 @@ class AggregateSumPrim(Primitive):
 AggregateSum = AggregateSumPrim()
 
 
+class AggregateMinPrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(AggregateMinPrim, self).__init__("AggregateMin")
+
+    def __call__(self, *args):
+
+        # Since it is an aggregator/reducer it takes in a list of bobs
+        boblist = args
+
+        # Set default values for miny,maxy,minx,maxx using first entry
+        miny = maxy = boblist[0].y
+        minx = maxx = boblist[0].x
+
+        # Loop over bobs to find maximum spatial extent
+        for bob in boblist:
+            # Find miny,maxy,minx,maxx
+            miny = min(miny, bob.y)
+            maxy = max(maxy, bob.y)
+            minx = min(minx, bob.x)
+            maxx = max(maxx, bob.x)
+
+        # Create the key_value output Bob that (spatially) spans all input bobs
+        out_kv = KeyValue(miny, minx, maxy - miny, maxx - minx)
+
+        # Set data to be an empty dictionary
+        out_kv.data = {}
+
+        # Loop over bobs
+        for bob in boblist:
+            # Loop over keys
+            for key in bob.data:
+                # Collect partial mins for each key
+                if key in out_kv.data:
+                    out_kv.data[key].append(bob.data[key])
+                else:
+                    out_kv.data[key] = []
+                    out_kv.data[key].append(bob.data[key])
+
+        print(out_kv.data);
+
+        return out_kv
+
+
+AggregateMin = AggregateMinPrim()
+
+class AggregateMaxPrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(AggregateMaxPrim, self).__init__("AggregateMax")
+
+    def __call__(self, *args):
+
+        # Since it is an aggregator/reducer it takes in a list of bobs
+        boblist = args
+
+        # Set default values for miny,maxy,minx,maxx using first entry
+        miny = maxy = boblist[0].y
+        minx = maxx = boblist[0].x
+
+        # Loop over bobs to find maximum spatial extent
+        for bob in boblist:
+            # Find miny,maxy,minx,maxx
+            miny = min(miny, bob.y)
+            maxy = max(maxy, bob.y)
+            minx = min(minx, bob.x)
+            maxx = max(maxx, bob.x)
+
+        # Create the key_value output Bob that (spatially) spans all input bobs
+        out_kv = KeyValue(miny, minx, maxy - miny, maxx - minx)
+
+        # Set data to be an empty dictionary
+        out_kv.data = {}
+
+        # Loop over bobs
+        for bob in boblist:
+            # Loop over keys
+            for key in bob.data:
+                # Collect partial mins for each key
+                if key in out_kv.data:
+                    out_kv.data[key].append(bob.data[key])
+                else:
+                    out_kv.data[key] = []
+                    out_kv.data[key].append(bob.data[key])
+
+        print(out_kv.data);
+
+        return out_kv
+
+
+AggregateMax = AggregateMaxPrim()
+
+
 class AveragePrim(Primitive):
     def __init__(self):
 
@@ -116,6 +209,40 @@ class AveragePrim(Primitive):
         return out_kv
 
 Average = AveragePrim()
+
+class MinPrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(MinPrim,self).__init__("Min")
+
+    def __call__(self, mins = None):
+        # Create the key_value output bob for min
+        out_kv = KeyValue(mins.y, mins.x, mins.h, mins.w)
+
+        for key in mins.data:
+            out_kv.data[key] = min(mins.data[key]);
+
+        return out_kv
+
+Min = MinPrim()
+
+class MaxPrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(MaxPrim,self).__init__("Max")
+
+    def __call__(self, maxes = None):
+        # Create the key_value output bob for max
+        out_kv = KeyValue(maxes.y, maxes.x, maxes.h, maxes.w)
+
+        for key in maxes.data:
+            out_kv.data[key] = max(maxes.data[key]);
+
+        return out_kv
+
+Max = MaxPrim()
         
 # FIXME: Still in development.
 class PartialSumRasterizePrim(Primitive):
@@ -131,9 +258,9 @@ class PartialSumRasterizePrim(Primitive):
             print("-> Spark PartialSumRasterize rdd")
 
             # DEBUG
-            sample_tile = rdd.take(1)[0]
-            sample_output = ComputePartialSum(sample_tile)
-            print("sample tile output: ", type(sample_output))
+            #sample_tile = rdd.take(1)[0]
+            #sample_output = ComputePartialSum(sample_tile)
+            #print("sample tile output: ", type(sample_output))
 
             new_rdd = rdd.map(lambda x: ComputePartialSum(x)).persist()
 
@@ -166,13 +293,12 @@ class PartialSumRasterizePrim(Primitive):
         
         # FIRST ELEMENT WORKS!
         #arr = rasterio.features.rasterize(shapes = [ (zone.data[0]['geometry'],int(zone.data[0]['properties']['STATEFP'])) ], out_shape=data.data.shape, transform = transform)
-        print("--> Data size:", sys.getsizeof(data.data))
-        print("--> Data shape:", data.data.shape)
-        print("--> Data type:", type(data.data))
-        print("--> dtype:", data.data.dtype)
-        print("-> Converted zone from bytes")
-        print("--> Zone size:", sys.getsizeof(zone))
-        print("--> Zone type:", type(zone))
+        # print("--> Data size:", sys.getsizeof(data.data))
+        # print("--> Data shape:", data.data.shape)
+        # print("--> Data type:", type(data.data))
+        # print("--> dtype:", data.data.dtype)
+        # print("--> Zone size:", sys.getsizeof(zone))
+        # print("--> Zone type:", type(zone))
         zoneshapes = ((f['geometry'],int(f['properties']['STATEFP'])) for f in zone.data)
         # zoneshapes = ((f['geometry'],int(f['properties']['geoid'])) for f in zone.data)
 
@@ -383,16 +509,16 @@ def ComputePartialSum(tile):
     # convert from bytes
     #data = np.frombuffer(tile.data, dtype=np.uint8)
     data = pickle.loads(tile.data)
-    print("-> Converted data array from bytes")
-    print("--> Data size:", sys.getsizeof(data))
-    print("--> Data shape:", data.shape)
-    print("--> Data type:", type(data))
-    print("--> dtype:", data.dtype)
+    # print("-> Converted data array from bytes")
+    # print("--> Data size:", sys.getsizeof(data))
+    # print("--> Data shape:", data.shape)
+    # print("--> Data type:", type(data))
+    # print("--> dtype:", data.dtype)
     # print("Data:",data)
     zone = pickle.loads(tile.zone)
-    print("-> Converted zone from bytes")
-    print("--> Zone size:", sys.getsizeof(zone))
-    print("--> Zone type:", type(zone))
+    # print("-> Converted zone from bytes")
+    # print("--> Zone size:", sys.getsizeof(zone))
+    # print("--> Zone type:", type(zone))
 
     # rasterize shp
     transform = rasterio.transform.from_origin(tile.x, tile.y + tile.h, tile.cellsize, tile.cellsize)
@@ -453,3 +579,445 @@ def ComputePartialSum(tile):
     zonearr = None
 
     return out_kv
+
+
+class PartialMinRasterizePrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(PartialMinRasterizePrim, self).__init__("PartialMinRasterize")
+
+    def __call__(self, zone=None, data=None, rdd=None):
+
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark PartialMinRasterize rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: ComputePartialMin(x)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+        transform = rasterio.transform.from_origin(data.x, data.y + data.h, data.cellsize, data.cellsize)
+        zoneshapes = ((f['geometry'], int(f['properties']['STATEFP'])) for f in zone.data)
+        zonearr = rasterio.features.rasterize(shapes=zoneshapes, out_shape=data.data.shape, transform=transform)
+
+        # Create the key_value output bob
+        out_kv = KeyValue(zone.h, zone.w, zone.y, zone.x)
+
+        print("Processing raster of size", data.nrows, "x", data.ncols)
+
+        # Try 5 np.bincount with pandas.'unique'
+        zonearr_flat = zonearr.flatten()
+        value_flat = data.data.flatten()
+        empty_value = np.amax(zonearr_flat) + 2
+        zonearr_flat[value_flat < (data.nodatavalue + 1)] = empty_value # assign no-data-value to empty-value zone
+
+        # pandas 'unique'
+        zone_ss = pd.Series(zonearr_flat)
+        # Zip values and counts into small dict and put them into the Bob
+        dict_count = zone_ss.value_counts().to_dict()
+        if empty_value in dict_count.keys():
+            del dict_count[empty_value]
+            if len(dict_count) < 1:
+                return out_kv
+
+        zonereal = list(dict_count.keys())
+
+        # Loop over zones to find partial min
+        for zone in zonereal:
+            values = value_flat[zonearr_flat == zone];
+            zone_min = values.min();
+            out_kv.data[zone] = zone_min;
+
+        print(out_kv.data)
+
+        del zonearr
+        zonearr = None
+
+        return out_kv
+
+
+PartialMinRasterize = PartialMinRasterizePrim()
+
+def ComputePartialMin(tile):
+    print("\nTile type:", type(tile))
+
+    data = pickle.loads(tile.data)
+    zone = pickle.loads(tile.zone)
+
+    # rasterize shp
+    transform = rasterio.transform.from_origin(tile.x, tile.y + tile.h, tile.cellsize, tile.cellsize)
+    print("-> Transformed")
+    zoneshapes = ((f['geometry'], int(f['properties']['STATEFP'])) for f in zone.data)
+    print("-> Zoneshaped")
+    zonearr = rasterio.features.rasterize(shapes=zoneshapes, out_shape=data.shape, transform=transform)
+    print("-> Rasterized zone array")
+
+    zonearr_flat = zonearr.flatten()
+    value_flat = data.flatten()
+
+    # prep: remove no-data-value
+    empty_value = np.amax(zonearr_flat) + 2
+    zonearr_flat[value_flat < (tile.nodatavalue + 1)] = empty_value
+
+    out_kv = KeyValue(zone.h, zone.w, zone.y, zone.x)
+
+    # pandas 'unique'
+    zone_ss = pd.Series(zonearr_flat)
+    # Zip values and counts into small dict and put them into the Bob
+
+    # remove no-data-value
+    dict_count = zone_ss.value_counts().to_dict()
+    if empty_value in dict_count.keys():
+        del dict_count[empty_value]
+        if len(dict_count) < 1:
+            return out_kv
+
+    zonereal = list(dict_count.keys())
+
+    # zone list: zonereal
+    # Loop over zones to find partial min
+    for zone in zonereal:
+        values = value_flat[zonearr_flat == zone];
+        zone_min = values.min();
+        out_kv.data[zone] = zone_min;
+
+    print(out_kv.data)
+
+    del zonearr
+    zonearr = None
+
+    return out_kv
+
+class PartialMaxRasterizePrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(PartialMaxRasterizePrim, self).__init__("PartialMaxRasterize")
+
+    def __call__(self, zone=None, data=None, rdd=None):
+
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark PartialMaxRasterize rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: ComputePartialMax(x)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+        transform = rasterio.transform.from_origin(data.x, data.y + data.h, data.cellsize, data.cellsize)
+        zoneshapes = ((f['geometry'], int(f['properties']['STATEFP'])) for f in zone.data)
+        zonearr = rasterio.features.rasterize(shapes=zoneshapes, out_shape=data.data.shape, transform=transform)
+
+        # Create the key_value output bob
+        out_kv = KeyValue(zone.h, zone.w, zone.y, zone.x)
+
+        print("Processing raster of size", data.nrows, "x", data.ncols)
+
+        # Try 5 np.bincount with pandas.'unique'
+        zonearr_flat = zonearr.flatten()
+        value_flat = data.data.flatten()
+        empty_value = np.amax(zonearr_flat) + 2
+        zonearr_flat[value_flat < (data.nodatavalue + 1)] = empty_value # assign no-data-value to empty-value zone
+
+        # pandas 'unique'
+        zone_ss = pd.Series(zonearr_flat)
+        # Zip values and counts into small dict and put them into the Bob
+        dict_count = zone_ss.value_counts().to_dict()
+        if empty_value in dict_count.keys():
+            del dict_count[empty_value]
+            if len(dict_count) < 1:
+                return out_kv
+
+        zonereal = list(dict_count.keys())
+
+        # Loop over zones to find partial min
+        for zone in zonereal:
+            values = value_flat[zonearr_flat == zone];
+            zone_max = values.max();
+            out_kv.data[zone] = zone_max;
+
+        print(out_kv.data)
+
+        del zonearr
+        zonearr = None
+
+        return out_kv
+
+
+PartialMaxRasterize = PartialMaxRasterizePrim()
+
+def ComputePartialMax(tile):
+    print("\nTile type:", type(tile))
+
+    data = pickle.loads(tile.data)
+    zone = pickle.loads(tile.zone)
+
+    # rasterize shp
+    transform = rasterio.transform.from_origin(tile.x, tile.y + tile.h, tile.cellsize, tile.cellsize)
+    print("-> Transformed")
+    zoneshapes = ((f['geometry'], int(f['properties']['STATEFP'])) for f in zone.data)
+    print("-> Zoneshaped")
+    zonearr = rasterio.features.rasterize(shapes=zoneshapes, out_shape=data.shape, transform=transform)
+    print("-> Rasterized zone array")
+
+    zonearr_flat = zonearr.flatten()
+    value_flat = data.flatten()
+
+    # prep: remove no-data-value
+    empty_value = np.amax(zonearr_flat) + 2
+    zonearr_flat[value_flat < (tile.nodatavalue + 1)] = empty_value
+
+    out_kv = KeyValue(zone.h, zone.w, zone.y, zone.x)
+
+    # pandas 'unique'
+    zone_ss = pd.Series(zonearr_flat)
+    # Zip values and counts into small dict and put them into the Bob
+
+    # remove no-data-value
+    dict_count = zone_ss.value_counts().to_dict()
+    if empty_value in dict_count.keys():
+        del dict_count[empty_value]
+        if len(dict_count) < 1:
+            return out_kv
+
+    zonereal = list(dict_count.keys())
+
+    # zone list: zonereal
+    # Loop over zones to find partial min
+    for zone in zonereal:
+        values = value_flat[zonearr_flat == zone];
+        zone_max = values.max();
+        out_kv.data[zone] = zone_max;
+
+    print(out_kv.data)
+
+    del zonearr
+    zonearr = None
+
+    return out_kv
+
+
+class SubstractPrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(SubstractPrim, self).__init__("Substract")
+
+    def __call__(self, data1=None, data2=None, rdd=None):
+
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark Substract rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: Substract(x)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+
+Substract = SubstractPrim()
+
+def Substract(tile):
+    print("\nTile type:", type(tile))
+
+    data1 = pickle.loads(tile.data1)
+    data2 = pickle.loads(tile.data2)
+
+    nodatavalue1 = tile.nodatavalue1
+    nodatavalue2 = tile.nodatavalue2
+
+    return np.subtract(data1, data2)
+
+
+class AddPrim(Primitive):
+    def __init__(self):
+        # Call the __init__ for Primitive
+        super(AddPrim, self).__init__("Add")
+
+    def __call__(self, data1=None, data2=None, rdd=None):
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark Add rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: Add(x)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+
+Add = AddPrim()
+
+
+def Add(tile):
+    print("\nTile type:", type(tile))
+
+    data1 = pickle.loads(tile.data1)
+    data2 = pickle.loads(tile.data2)
+
+    nodatavalue1 = tile.nodatavalue1
+    nodatavalue2 = tile.nodatavalue2
+
+    return np.add(data1, data2)
+
+class MultiplyPrim(Primitive):
+    def __init__(self):
+        # Call the __init__ for Primitive
+        super(MultiplyPrim, self).__init__("Multiply")
+
+    def __call__(self, data1=None, data2=None, rdd=None):
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark Multiply rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: Multiply(x)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+
+Multiply = MultiplyPrim()
+
+
+def Multiply(tile):
+    print("\nTile type:", type(tile))
+
+    data1 = pickle.loads(tile.data1)
+    data2 = pickle.loads(tile.data2)
+
+    nodatavalue1 = tile.nodatavalue1
+    nodatavalue2 = tile.nodatavalue2
+
+    return np.multiply(data1, data2)
+
+
+class DividePrim(Primitive):
+    def __init__(self):
+        # Call the __init__ for Primitive
+        super(DividePrim, self).__init__("Divide")
+
+    def __call__(self, data1=None, data2=None, rdd=None):
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark Divide rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: Divide(x)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+
+Divide = DividePrim()
+
+
+def Divide(tile):
+    print("\nTile type:", type(tile))
+
+    data1 = pickle.loads(tile.data1)
+    data2 = pickle.loads(tile.data2)
+
+    nodatavalue1 = tile.nodatavalue1
+    nodatavalue2 = tile.nodatavalue2
+
+    return np.divide(data1, data2)
+
+class NDVIPrim(Primitive):
+    def __init__(self):
+        # Call the __init__ for Primitive
+        super(NDVIPrim, self).__init__("NDVI")
+
+    def __call__(self, NIR=None, VIS=None, rdd=None):
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark NDVI rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: NDVI(x)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+
+NDVI = NDVIPrim()
+
+
+def NDVI(tile):
+    print("\nTile type:", type(tile))
+
+    NIR = pickle.loads(tile.data1)
+    VIS = pickle.loads(tile.data2)
+
+    nodatavalue1 = tile.nodatavalue1
+    nodatavalue2 = tile.nodatavalue2
+
+    # NDVI = (NIR - VIS)/(NIR + VIS)
+    return np.divide(np.subtract(NIR, VIS), np.add(NIR, VIS))
+
+class HillShadePrim(Primitive):
+    def __init__(self):
+        # Call the __init__ for Primitive
+        super(HillShadePrim, self).__init__("HillShade")
+
+    def __call__(self, data=None, rdd=None):
+        # For Spark Engine only
+        if (isinstance(rdd, pyspark.rdd.RDD)):
+            print("-> Spark HillShade rdd")
+            # DEBUG
+            # sample_tile = rdd.take(1)[0]
+            # sample_output = ComputePartialSum(sample_tile)
+            # print("sample tile output: ", type(sample_output))
+            new_rdd = rdd.map(lambda x: HillShade(x, self.azimuth, self.angle_altitude)).persist()
+            rdd.unpersist()
+            return new_rdd
+
+    def reg(self, azimuth, angle_altitude):
+        self.azimuth = azimuth
+        self.angle_altitude = angle_altitude
+        return self
+
+
+HillShade = HillShadePrim()
+
+
+def HillShade(tile, azimuth=315, altitude=45, z_factor=1/8.0):
+    print("\nTile type:", type(tile))
+
+    data = pickle.loads(tile.data)
+
+    nodatavalue1 = tile.nodatavalue
+
+    # dz/dx, dz/dy
+    dx, dy = np.gradient(data)
+
+    slope_rad = np.arctan(z_factor * np.sqrt(dx * dx + dy * dy))
+    slope = np.pi / 2 - slope_rad
+
+    aspect = np.arctan2(-dx, dy)
+
+
+    # Azimuth_rad = Azimuth * pi / 180.0
+    azimuth_rad = azimuth * np.pi / 180
+    # Zenith_rad = Zenith * pi / 180.0
+    zenith_rad = (90 - altitude) * np.pi / 180
+
+    hillshade = np.sin(zenith_rad) * np.sin(slope) \
+             + np.cos(zenith_rad) * np.cos(slope) \
+             * np.cos(azimuth_rad - aspect)
+
+    result = 255 * (hillshade + 1) / 2
+    return result;
