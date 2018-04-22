@@ -547,11 +547,13 @@ class SparkEngine(Engine):
                     # Examples: HillShade
                     tile = raster_subtile[0];  # should only have one subtile
                     avro_writer.append({"data": pickle.dumps(tile.data), \
+                                        "order": tile_index, \
                                         "nodatavalue": tile.nodatavalue})
                 else:
                     print("*** PLEASE CREATE NEW AVRO SCHEMA! ***")
                     assert (False);
 
+            avro_writer.close()
             # End of Step 2
             # End of New Split
 
@@ -808,6 +810,7 @@ def OneGeotiffAvroSchema():
            '"name": "SparkTiles",\n ' \
            '"fields": [\n' \
            '     {"name": "data", "type": "bytes"},\n' \
+           '     {"name": "order", "type": "int"},\n' \
            '     {"name": "nodatavalue",  "type": ["double", "null"]}\n' \
            ' ]' \
            '\n}'

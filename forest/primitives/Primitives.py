@@ -16,6 +16,7 @@ from .Primitive import *
 from ..bobs.Bobs import *
 import pandas as pd
 import math
+import matplotlib.pyplot as plt
 
 
 '''
@@ -944,26 +945,18 @@ class NDVIPrim(Primitive):
         # For Spark Engine only
         if (isinstance(rdd, pyspark.rdd.RDD)):
             print("-> Spark NDVI rdd")
-            # DEBUG
-            # sample_tile = rdd.take(1)[0]
-            # sample_output = ComputePartialSum(sample_tile)
-            # print("sample tile output: ", type(sample_output))
-            new_rdd = rdd.map(lambda x: NDVI(x)).persist()
+            new_rdd = rdd.map(lambda x: ComputeNDVI(x)).persist()
             rdd.unpersist()
             return new_rdd
 
 
 NDVI = NDVIPrim()
 
-
-def NDVI(tile):
+def ComputeNDVI(tile):
     print("\nTile type:", type(tile))
 
-    NIR = pickle.loads(tile.data1)
-    VIS = pickle.loads(tile.data2)
-
-    nodatavalue1 = tile.nodatavalue1
-    nodatavalue2 = tile.nodatavalue2
+    NIR = pickle.loads(tile.data1).astype(float)
+    VIS = pickle.loads(tile.data2).astype(float)
 
     # NDVI = (NIR - VIS)/(NIR + VIS)
     return np.divide(np.subtract(NIR, VIS), np.add(NIR, VIS))
@@ -977,11 +970,7 @@ class HillShadePrim(Primitive):
         # For Spark Engine only
         if (isinstance(rdd, pyspark.rdd.RDD)):
             print("-> Spark HillShade rdd")
-            # DEBUG
-            # sample_tile = rdd.take(1)[0]
-            # sample_output = ComputePartialSum(sample_tile)
-            # print("sample tile output: ", type(sample_output))
-            new_rdd = rdd.map(lambda x: HillShade(x, self.azimuth, self.angle_altitude)).persist()
+            new_rdd = rdd.map(lambda x: ComputeHillShade(x, self.azimuth, self.angle_altitude)).persist()
             rdd.unpersist()
             return new_rdd
 
@@ -994,30 +983,42 @@ class HillShadePrim(Primitive):
 HillShade = HillShadePrim()
 
 
-def HillShade(tile, azimuth=315, altitude=45, z_factor=1/8.0):
+def ComputeHillShade(tile, azimuth=315, altitude=45):
     print("\nTile type:", type(tile))
 
     data = pickle.loads(tile.data)
 
-    nodatavalue1 = tile.nodatavalue
-
-    # dz/dx, dz/dy
     dx, dy = np.gradient(data)
-
-    slope_rad = np.arctan(z_factor * np.sqrt(dx * dx + dy * dy))
-    slope = np.pi / 2 - slope_rad
-
+    slope = np.pi / 2.0 - np.arctan(np.sqrt(dx * dx + dy * dy))
     aspect = np.arctan2(-dx, dy)
+    azimuth_rad = azimuth * np.pi / 180.0
+    zenith_rad = altitude * np.pi / 180.0
 
-
-    # Azimuth_rad = Azimuth * pi / 180.0
-    azimuth_rad = azimuth * np.pi / 180
-    # Zenith_rad = Zenith * pi / 180.0
-    zenith_rad = (90 - altitude) * np.pi / 180
-
-    hillshade = np.sin(zenith_rad) * np.sin(slope) \
+    shaded = np.sin(zenith_rad) * np.sin(slope) \
              + np.cos(zenith_rad) * np.cos(slope) \
-             * np.cos(azimuth_rad - aspect)
+               * np.cos(azimuth_rad - aspect)
 
-    result = 255 * (hillshade + 1) / 2
-    return result;
+    return 255 * (shaded + 1) / 2
+
+class DisplayPrim(Primitive):
+    def __init__(self):
+
+        # Call the __init__ for Primitive
+        super(DisplayPrim, self).__init__("Display")
+
+    def __call__(self, *args):
+
+        boblist = args
+
+        rotated = []
+        for bob_i in range(len(boblist)):
+            bob = boblist[bob_i]
+            rotated.append(np.rot90(bob, 2))
+
+        hillshade = np.vstack(rotated)
+        print("shape:", hillshade.shape)
+
+        plt.imshow(np.rot90(hillshade, 2), cmap='Greys')
+        return hillshade;
+
+Display = DisplayPrim()
